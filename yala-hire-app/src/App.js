@@ -22,6 +22,7 @@ import Login from "./pages/Auth/Login";
 import WhiteCollarProfile from "./pages/WhiteCollarProfile";
 import BlueCollarProfile from "./pages/BlueCollarProfile";
 import CompanyProfile from "./pages/CompanyProfile";
+import JobApplicants from "./pages/JobApplicants";
 
 // Summary Pages
 import BlueCollarSummary from "./pages/BlueCollarSummary";
@@ -201,6 +202,7 @@ export default function App() {
             )
           }
         />
+        <Route path="/jobs/:jobId/applicants" element={<JobApplicants />} />
 
         <Route
           path="/company/jobs/:jobId/edit"

@@ -152,24 +152,3 @@ export default function BlueCollarSummary() {
     </div>
   );
 }
-
-function computeMatchPercentage(seekerSkillsStr, jobSkillsStr) {
-  const seekerSkills = seekerSkillsStr
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const jobSkills = jobSkillsStr
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (!jobSkills.length) return 100;
-
-  const seekerSet = new Set(seekerSkills);
-  let matchCount = 0;
-  jobSkills.forEach((s) => {
-    if (seekerSet.has(s)) matchCount++;
-  });
-
-  return (matchCount / jobSkills.length) * 100;
-}
