@@ -1,10 +1,10 @@
-// src/pages/BlueCollarSummary.jsx
+// src/pages/WhiteCollarSummary.jsx
 import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useNavigate } from "react-router-dom";
-import { FaPhone, FaUserCog, FaTools, FaHardHat } from "react-icons/fa";
+import { FaPhone, FaUserTie, FaUserCog, FaTools } from "react-icons/fa";
 
-export default function BlueCollarSummary() {
+export default function WhiteCollarSummary() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -55,21 +55,29 @@ export default function BlueCollarSummary() {
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: "1.8rem", color: "#0b3b75" }}>
+          <h2 style={{ margin: 0, fontSize: "1.8rem", color: "#1e3a8a" }}>
             Your Profile
           </h2>
-          <p style={{ margin: 0, display: "flex", alignItems: "center", color: "#0b7ad1", fontWeight: "bold" }}>
-            <FaHardHat style={{ marginRight: 6 }} /> Blue Collar Worker
+          <p
+            style={{
+              margin: 0,
+              display: "flex",
+              alignItems: "center",
+              color: "#475569",
+              fontWeight: "bold",
+            }}
+          >
+            <FaUserTie style={{ marginRight: 6 }} /> White Collar Professional
           </p>
         </div>
 
         <button
-          onClick={() => navigate("/edit-blue-profile")}
+          onClick={() => navigate("/edit-white-profile")}
           style={{
             padding: "0.7rem 1.4rem",
             borderRadius: "10px",
             border: "none",
-            background: "#0b7ad1",
+            background: "#1e3a8a",
             color: "white",
             cursor: "pointer",
             fontWeight: "bold",
@@ -79,17 +87,19 @@ export default function BlueCollarSummary() {
         </button>
       </div>
 
-      <hr style={{ margin: "1.5rem 0", borderColor: "#d0d8e0" }} />
+      <hr style={{ margin: "1.5rem 0", borderColor: "#e2e8f0" }} />
 
-      {/* Full Name */}
+      {/* Personal Info */}
       <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>
+        <h3 style={{ margin: 0, color: "#1e3a8a" }}>
           <FaUserCog style={{ marginRight: "8px" }} />
           Personal Information
         </h3>
+
         <p style={{ margin: "0.5rem 0" }}>
           <strong>Name:</strong> {profile.full_name}
         </p>
+
         <p style={{ margin: "0.5rem 0" }}>
           <strong>Phone:</strong>{" "}
           <span style={{ display: "inline-flex", alignItems: "center" }}>
@@ -98,25 +108,27 @@ export default function BlueCollarSummary() {
         </p>
       </div>
 
-      {/* Experience */}
-      <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>Experience</h3>
-        <p style={{ margin: "0.5rem 0" }}>
-          {profile.experience || "No experience added."}
-        </p>
-      </div>
-
       {/* Education */}
       <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>Education</h3>
+        <h3 style={{ margin: 0, color: "#1e3a8a" }}>Education</h3>
+
         <p style={{ margin: "0.5rem 0" }}>
           {profile.education || "No education added."}
         </p>
       </div>
 
+      {/* Experience */}
+      <div style={{ marginBottom: "1rem" }}>
+        <h3 style={{ margin: 0, color: "#1e3a8a" }}>Experience</h3>
+
+        <p style={{ margin: "0.5rem 0" }}>
+          {profile.experience || "No experience added."}
+        </p>
+      </div>
+
       {/* Skills */}
       <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>
+        <h3 style={{ margin: 0, color: "#1e3a8a" }}>
           <FaTools style={{ marginRight: "8px" }} /> Skills
         </h3>
 
@@ -133,8 +145,8 @@ export default function BlueCollarSummary() {
               <span
                 key={index}
                 style={{
-                  background: "#e9f3ff",
-                  color: "#004080",
+                  background: "#eef2ff",
+                  color: "#3730a3",
                   padding: "0.35rem 0.7rem",
                   borderRadius: "999px",
                   fontSize: "0.85rem",

@@ -18,16 +18,22 @@ import SeekerType from "./pages/RoleSelection/SeekerType";
 import Register from "./pages/Auth/Register";
 import Login from "./pages/Auth/Login";
 
-// Profile Pages
+// Edit Pages
 import WhiteCollarProfile from "./pages/WhiteCollarProfile";
 import BlueCollarProfile from "./pages/BlueCollarProfile";
 import CompanyProfile from "./pages/CompanyProfile";
 
-// Summary Page (NEW)
+// Summary Pages
 import BlueCollarSummary from "./pages/BlueCollarSummary";
+import WhiteCollarSummary from "./pages/WhiteCollarSummary";   // ✅ NEW
+import CompanySummary from "./pages/CompanySummary";
+// add imports at the top:
+import CompanyJobsForm from "./pages/CompanyJobsForm";
+import JobDetails from "./pages/JobDetails";
 
 // Auto-router
 import ProfilePage from "./pages/ProfilePage";
+
 
 // ---------------- NAVBAR ----------------
 function NavBar({ session }) {
@@ -56,9 +62,13 @@ function NavBar({ session }) {
         {!session && <Link to="/">Home</Link>}
         {!session && <Link to="/login">Login</Link>}
 
+        {/* Always visible for logged-in users */}
         {session && <Link to="/profile">Profile</Link>}
 
-        {session && role === "company" && <Link to="/company-profile">Company</Link>}
+        {/* Role-based links */}
+        {session && role === "company" && (
+          <Link to="/company-profile">Company</Link>
+        )}
 
         {session && role === "seeker" && collar === "white" && (
           <Link to="/edit-white-profile">Edit White Profile</Link>
@@ -77,6 +87,7 @@ function NavBar({ session }) {
     </nav>
   );
 }
+
 
 // ---------------- APP ROUTES ----------------
 export default function App() {
@@ -97,7 +108,7 @@ export default function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/login" element={<Login />} />
 
-        {/* AUTO REDIRECT BASED ON USER TYPE */}
+        {/* AUTO-REDIRECT TO SUMMARY OR EDIT PAGE */}
         <Route
           path="/profile"
           element={
@@ -105,7 +116,7 @@ export default function App() {
           }
         />
 
-        {/* BLUE COLLAR PROFILE EDIT */}
+        {/* BLUE COLLAR EDIT PAGE */}
         <Route
           path="/edit-blue-profile"
           element={
@@ -117,7 +128,7 @@ export default function App() {
           }
         />
 
-        {/* BLUE COLLAR SUMMARY (AFTER SAVE) */}
+        {/* BLUE COLLAR SUMMARY PAGE */}
         <Route
           path="/profile/blue-summary"
           element={
@@ -129,7 +140,7 @@ export default function App() {
           }
         />
 
-        {/* WHITE COLLAR PROFILE EDIT */}
+        {/* WHITE COLLAR EDIT PAGE */}
         <Route
           path="/edit-white-profile"
           element={
@@ -141,7 +152,19 @@ export default function App() {
           }
         />
 
-        {/* COMPANY PROFILE */}
+        {/* ✅ WHITE COLLAR SUMMARY PAGE (NEW ROUTE) */}
+        <Route
+          path="/profile/white-summary"
+          element={
+            session && role === "seeker" && collar === "white" ? (
+              <WhiteCollarSummary />
+            ) : (
+              <Navigate to="/profile" replace />
+            )
+          }
+        />
+
+        {/* COMPANY PROFILE PAGE */}
         <Route
           path="/company-profile"
           element={
@@ -149,6 +172,43 @@ export default function App() {
               <CompanyProfile />
             ) : (
               <Navigate to="/profile" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/profile/company-summary"
+          element={
+            session && role === "company" ? (
+              <CompanySummary />
+            ) : (
+              <Navigate to="/profile" replace />
+            )
+          }
+        />
+
+                {/* JOB DETAILS (any logged-in seeker or guest can view) */}
+        <Route path="/jobs/:jobId" element={<JobDetails />} />
+
+        {/* COMPANY CREATE / EDIT JOB (only for company owner) */}
+        <Route
+          path="/company/jobs/new"
+          element={
+            session && role === "company" ? (
+              <CompanyJobsForm />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/company/jobs/:jobId/edit"
+          element={
+            session && role === "company" ? (
+              <CompanyJobsForm />
+            ) : (
+              <Navigate to="/login" replace />
             )
           }
         />

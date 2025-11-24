@@ -18,35 +18,40 @@ export default function ProfilePage() {
       }
 
       console.log("USER METADATA:", user.user_metadata);
-      const type = user.user_metadata?.type;     // "seeker" or "company"
-      const collar = user.user_metadata?.collar; // "white" or "blue"
 
+      const type = user.user_metadata?.type;     // seeker | company
+      const collar = user.user_metadata?.collar; // white | blue
+
+      // Company → dashboard
       if (type === "company") {
         navigate("/company-profile");
         return;
       }
 
-      if (type === "seeker") {
-        if (collar === "white") {
-          navigate("/edit-white-profile");
-          return;
-        }
-        if (collar === "blue") {
-          navigate("/edit-blue-profile");
-          return;
-        }
+      // Blue collar → blue summary
+      if (type === "seeker" && collar === "blue") {
+        navigate("/profile/blue-summary");
+        return;
+      }
 
-        // Seeker but no collar yet
+      // White collar → white summary
+      if (type === "seeker" && collar === "white") {
+        navigate("/profile/white-summary");
+        return;
+      }
+
+      // Seeker but no collar chosen yet
+      if (type === "seeker" && !collar) {
         navigate("/choose-seeker-type");
         return;
       }
 
-      // Fallback: go to home
+      // Fallback → home
       navigate("/");
     };
 
     loadUser();
   }, [navigate]);
 
-  return <p>Loading...</p>;
+  return <p>Loading profile...</p>;
 }
