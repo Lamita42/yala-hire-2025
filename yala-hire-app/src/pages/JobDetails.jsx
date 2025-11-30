@@ -1,12 +1,20 @@
 // src/pages/JobDetails.jsx
 import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { useNavigate, useParams } from "react-router-dom";
-import { FaMapMarkerAlt, FaBriefcase, FaTools, FaExternalLinkAlt } from "react-icons/fa";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
+import { FaMapMarkerAlt, FaBriefcase, FaTools, FaExternalLinkAlt, FaArrowLeft } from "react-icons/fa";
+
+const MATCH_THRESHOLD = 75;
 
 export default function JobDetails() {
   const { jobId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // if navigated from summary:
+  const matchFromSummary = location.state?.match || null;
+  const fromSummary = Boolean(location.state?.fromSummary);
+  const backTo = location.state?.backTo || null;
 
   const [job, setJob] = useState(null);
   const [company, setCompany] = useState(null);
@@ -63,7 +71,6 @@ export default function JobDetails() {
       return;
     }
 
-    // find the seeker row
     const { data: seeker, error: seekerError } = await supabase
       .from("job_seekers")
       .select("id")
@@ -76,10 +83,9 @@ export default function JobDetails() {
       return;
     }
 
-    // insert or ignore if already applied
     const { error: appError } = await supabase.from("applications").insert({
       job_id: job.id,
-      seeker_id: seeker.id,
+      user_id: seeker.id,
     });
 
     if (appError) {
@@ -103,6 +109,10 @@ export default function JobDetails() {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // If we came from summary & have a score < threshold → do not show Apply
+  const canApplyBasedOnMatch =
+    !matchFromSummary || (matchFromSummary.finalScore || 0) >= MATCH_THRESHOLD;
+
   return (
     <div
       style={{
@@ -114,6 +124,50 @@ export default function JobDetails() {
         boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
       }}
     >
+      {/* BACK BUTTON */}
+      <div style={{ marginBottom: "0.75rem", display: "flex", justifyContent: "space-between" }}>
+        <button
+          type="button"
+          onClick={() => {
+            if (backTo) navigate(backTo);
+            else navigate(-1);
+          }}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.4rem",
+            padding: "0.45rem 0.9rem",
+            borderRadius: "999px",
+            border: "1px solid #cbd5e1",
+            background: "white",
+            cursor: "pointer",
+            fontSize: "0.85rem",
+          }}
+        >
+          <FaArrowLeft /> Back
+        </button>
+
+        {company && (
+          <button
+            type="button"
+            onClick={() => navigate(`/company-profile/${company.id}`)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.45rem 0.9rem",
+              borderRadius: "999px",
+              border: "1px solid #cbd5e1",
+              background: "white",
+              cursor: "pointer",
+              fontSize: "0.85rem",
+            }}
+          >
+            View company profile <FaExternalLinkAlt size={10} />
+          </button>
+        )}
+      </div>
+
       <h2 style={{ marginTop: 0, marginBottom: "0.2rem", color: "#0b3b75" }}>
         {job.title}
       </h2>
@@ -147,27 +201,6 @@ export default function JobDetails() {
         {job.location || "Location not specified"}
         {job.is_remote && " • Remote / Hybrid"}
       </p>
-
-      {company && (
-        <button
-          type="button"
-          onClick={() => navigate(`/company-profile/${company.id}`)}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "0.4rem",
-            padding: "0.45rem 0.9rem",
-            borderRadius: "999px",
-            border: "1px solid #cbd5e1",
-            background: "white",
-            cursor: "pointer",
-            fontSize: "0.85rem",
-            marginBottom: "1rem",
-          }}
-        >
-          View company profile <FaExternalLinkAlt size={10} />
-        </button>
-      )}
 
       <hr style={{ margin: "1rem 0", borderColor: "#e5e7eb" }} />
 
@@ -230,8 +263,71 @@ export default function JobDetails() {
         <p>No specific skills listed.</p>
       )}
 
-      {/* APPLY BUTTON (hidden for owner) */}
-      {!isOwner && (
+      {/* EXTRA: show match info if we came from summary */}
+      {matchFromSummary && (
+        <div
+          style={{
+            marginTop: "1rem",
+            padding: "0.9rem 1rem",
+            borderRadius: "10px",
+            background: "#eff6ff",
+            border: "1px solid #bfdbfe",
+          }}
+        >
+          <p style={{ margin: 0 }}>
+            <strong>Your match score:</strong>{" "}
+            {matchFromSummary.finalScore.toFixed(1)}%
+          </p>
+          {matchFromSummary.reason && (
+            <p style={{ margin: "0.3rem 0 0" }}>
+              <strong>Why:</strong> {matchFromSummary.reason}
+            </p>
+          )}
+
+          {!canApplyBasedOnMatch && (
+            <>
+              <p style={{ margin: "0.6rem 0 0", color: "#b91c1c" }}>
+                You currently don't meet the requirements to apply for this job.
+              </p>
+
+              {matchFromSummary.missingSkills &&
+                matchFromSummary.missingSkills.length > 0 && (
+                  <>
+                    <p style={{ margin: "0.4rem 0 0" }}>
+                      <strong>Missing skills:</strong>
+                    </p>
+                    <ul style={{ marginTop: "0.2rem" }}>
+                      {matchFromSummary.missingSkills.map((s, idx) => (
+                        <li key={idx}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+              {matchFromSummary.courses &&
+                matchFromSummary.courses.length > 0 && (
+                  <>
+                    <p style={{ margin: "0.4rem 0 0" }}>
+                      <strong>Suggested courses:</strong>
+                    </p>
+                    <ul style={{ marginTop: "0.2rem" }}>
+                      {matchFromSummary.courses.map((c, idx) => (
+                        <li key={idx}>
+                          <strong>{c.title}</strong>
+                          {c.provider && <> – {c.provider}</>}
+                          {c.focus && <> ({c.focus})</>}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* APPLY BUTTON (hidden for owner or if score too low) */}
+      {!isOwner && canApplyBasedOnMatch && (
         <div style={{ marginTop: "1rem" }}>
           {message && <p style={{ color: "#15803d" }}>{message}</p>}
           {error && <p style={{ color: "darkred" }}>{error}</p>}

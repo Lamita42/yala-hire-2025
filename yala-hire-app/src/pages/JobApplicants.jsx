@@ -46,10 +46,16 @@ export default function JobApplicants() {
       setJob(jobData);
 
       // Load applications
-      const { data: apps } = await supabase
+      const { data: apps, error: appsErr } = await supabase
         .from("applications")
         .select("id, user_id, created_at")
         .eq("job_id", jobId);
+
+      if (appsErr) {
+        setError(appsErr.message);
+        setLoading(false);
+        return;
+      }
 
       if (!apps || apps.length === 0) {
         setApplicants([]);
@@ -58,17 +64,23 @@ export default function JobApplicants() {
       }
 
       // Fetch seeker profiles
-      const seekerIds = apps.map(a => a.user_id);
+      const seekerIds = apps.map((a) => a.user_id);
 
-      const { data: seekers } = await supabase
+      const { data: seekers, error: seekersErr } = await supabase
         .from("job_seekers")
         .select("*")
         .in("id", seekerIds);
 
+      if (seekersErr) {
+        setError(seekersErr.message);
+        setLoading(false);
+        return;
+      }
+
       // combine
-      const merged = apps.map(app => ({
+      const merged = apps.map((app) => ({
         ...app,
-        seeker: seekers.find(s => s.id === app.user_id),
+        seeker: seekers.find((s) => s.id === app.user_id) || null,
       }));
 
       setApplicants(merged);
@@ -84,14 +96,14 @@ export default function JobApplicants() {
   return (
     <div style={{ maxWidth: "850px", margin: "2rem auto", padding: "2rem" }}>
       <h2 style={{ marginBottom: "1rem" }}>
-        Applicants for: <strong>{job.title}</strong>
+        Applicants for: <strong>{job?.title}</strong>
       </h2>
 
       {applicants.length === 0 ? (
         <p>No applicants yet.</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          {applicants.map(app => (
+          {applicants.map((app) => (
             <div
               key={app.id}
               style={{
@@ -105,10 +117,10 @@ export default function JobApplicants() {
             >
               <div>
                 <p style={{ margin: 0, fontWeight: "bold" }}>
-                  <FaUser /> {app.seeker?.full_name}
+                  <FaUser /> {app.seeker?.full_name || "Unknown applicant"}
                 </p>
                 <p style={{ margin: "0.3rem 0" }}>
-                  <FaPhone /> {app.seeker?.phone}
+                  <FaPhone /> {app.seeker?.phone || "No phone"}
                 </p>
                 <p style={{ margin: 0, color: "#555" }}>
                   {app.seeker?.skills || "No skills added"}
@@ -116,7 +128,11 @@ export default function JobApplicants() {
               </div>
 
               <button
-                onClick={() => navigate(`/seeker/${app.seeker.id}`)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // use the FK `user_id`, which always exists
+                  navigate(`/seeker/${app.user_id}`);
+                }}
                 style={{
                   padding: "0.5rem 1rem",
                   borderRadius: "8px",

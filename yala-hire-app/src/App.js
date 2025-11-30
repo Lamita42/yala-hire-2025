@@ -17,7 +17,7 @@ import Home from "./pages/Home/Home";
 import SeekerType from "./pages/RoleSelection/SeekerType";
 import Register from "./pages/Auth/Register";
 import Login from "./pages/Auth/Login";
-
+import SeekerPublicProfile from "./pages/SeekerPublicProfile";
 // Edit Pages
 import WhiteCollarProfile from "./pages/WhiteCollarProfile";
 import BlueCollarProfile from "./pages/BlueCollarProfile";
@@ -176,6 +176,8 @@ export default function App() {
             )
           }
         />
+
+        <Route path="/seeker/:seekerId" element={<SeekerPublicProfile />} />
 
         <Route
           path="/profile/company-summary"
