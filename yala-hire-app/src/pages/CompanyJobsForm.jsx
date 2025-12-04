@@ -167,8 +167,8 @@ export default function CompanyJobsForm() {
 
       setSuccess("Job saved successfully ✔");
       setTimeout(() => {
-        navigate("/company-profile");
-      }, 900);
+        navigate("/profile/company-summary")
+ }, 900);
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to save job.");

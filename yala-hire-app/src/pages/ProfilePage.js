@@ -24,7 +24,7 @@ export default function ProfilePage() {
 
       // Company → dashboard
       if (type === "company") {
-        navigate("/company-profile");
+        navigate("/profile/company-summary");
         return;
       }
 

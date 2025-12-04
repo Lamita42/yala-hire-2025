@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useNavigate } from "react-router-dom";
 import { FaBuilding, FaMapMarkerAlt, FaEdit, FaInfoCircle } from "react-icons/fa";
-
+import ProfileSearchBox from "../components/ProfileSearchBox";
 export default function CompanySummary() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -73,7 +73,7 @@ export default function CompanySummary() {
         </div>
 
         <button
-          onClick={() => navigate("/edit-company-profile")}
+          onClick={() => navigate("/company/edit-profile")}
           style={{
             padding: "0.7rem 1.4rem",
             borderRadius: "10px",
@@ -87,6 +87,7 @@ export default function CompanySummary() {
           <FaEdit style={{ marginRight: 6 }} /> Edit
         </button>
       </div>
+      <ProfileSearchBox />
 
       <hr style={{ margin: "1.5rem 0", borderColor: "#d0d8e0" }} />
 

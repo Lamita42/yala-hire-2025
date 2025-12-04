@@ -1,70 +1,48 @@
 // src/pages/WhiteCollarSummary.jsx
 import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { useNavigate } from "react-router-dom";
-import { FaPhone, FaUserTie, FaUserCog, FaTools, FaArrowLeft } from "react-icons/fa";
+import { useNavigate, useLocation } from "react-router-dom";
+import {
+  FaPhone,
+  FaUserTie,
+  FaUserCog,
+  FaTools,
+  FaFileDownload,
+} from "react-icons/fa";
+import ProfileSearchBox from "../components/ProfileSearchBox";
+import { saveSuggestionsToCache } from "../utils/aiMatching";
+import {
+  getOrCreateMatch,
+  getOrCreateImprovements,
+} from "../utils/aiMatching";
 
-import { aiMatchJob } from "../utils/aiMatching";
-import { computeMatchPercentage } from "../utils/matching";
-
-const MATCH_THRESHOLD = 75; // % needed to be allowed to apply
-
-// ---------- Local cache helpers (stable scores per profile version) ----------
-function getCacheKey(profile) {
-  return `matches_white_${profile.id}`;
-}
-
-function loadMatchesFromCache(profile) {
-  try {
-    const raw = localStorage.getItem(getCacheKey(profile));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed.profileVersion !== profile.updated_at) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function saveMatchesToCache(profile, recommended, improvement) {
-  try {
-    localStorage.setItem(
-      getCacheKey(profile),
-      JSON.stringify({
-        profileVersion: profile.updated_at || null,
-        recommended,
-        improvement,
-      })
-    );
-  } catch (err) {
-    console.warn("Could not save matches cache:", err);
-  }
-}
+const MATCH_THRESHOLD = 75;
 
 export default function WhiteCollarSummary() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const [recommended, setRecommended] = useState([]); // jobs with score >= 75
-  const [improvement, setImprovement] = useState([]); // jobs below 75 but with suggestions
+  const [matches, setMatches] = useState([]);
   const [checking, setChecking] = useState(false);
   const [matchError, setMatchError] = useState("");
-  const [openSuggestionJobId, setOpenSuggestionJobId] = useState(null);
+
+  const [showImproveModal, setShowImproveModal] = useState(false);
+  const [improveJob, setImproveJob] = useState(null);
+  const [improveData, setImproveData] = useState(null);
+  const [improveLoading, setImproveLoading] = useState(false);
+  const [improveError, setImproveError] = useState("");
 
   const navigate = useNavigate();
+  const location = useLocation();
+  const cameFromNav = location.state?.fromNav === true;
 
-  // ---------------------------------------------------------
-  // LOAD PROFILE + AUTO INIT MATCHES
-  // ---------------------------------------------------------
+  // -------------------- LOAD PROFILE --------------------
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData?.user;
 
-      if (!user) {
-        navigate("/login");
-        return;
-      }
+      if (!user) return navigate("/login");
 
       const { data, error } = await supabase
         .from("job_seekers")
@@ -72,176 +50,96 @@ export default function WhiteCollarSummary() {
         .eq("id", user.id)
         .single();
 
-      if (error) {
-        console.error(error);
-        setLoading(false);
-        return;
-      }
+      if (error) return console.error(error);
 
       setProfile(data);
       setLoading(false);
-
-      // After profile is loaded, try to load cached matches
-      const cached = loadMatchesFromCache(data);
-      if (cached) {
-        setRecommended(cached.recommended || []);
-        setImprovement(cached.improvement || []);
-      } else {
-        // First time or profile updated → auto compute
-        refreshMatches(data);
-      }
     };
 
     load();
   }, [navigate]);
 
-  // ---------------------------------------------------------
-  // CORE: COMPUTE MATCHES (AI + basic)
-  // ---------------------------------------------------------
-  const refreshMatches = async (currentProfile) => {
-    if (!currentProfile) return;
+  // -------------------- APPLY --------------------
+  const handleApply = async (jobId, finalScore) => {
+    if (finalScore < MATCH_THRESHOLD)
+      return alert("This job is not a strong match yet.");
 
-    setChecking(true);
-    setMatchError("");
-    setRecommended([]);
-    setImprovement([]);
-
-    const { data: jobs, error } = await supabase.from("jobs").select("*");
-
-    if (error || !jobs) {
-      console.error("Failed to load jobs:", error);
-      setMatchError("Failed to load jobs.");
-      setChecking(false);
-      return;
-    }
-
-    // Only white-collar jobs
-    const whiteJobs = jobs.filter((job) => job.collar_type === "white");
-
-    if (whiteJobs.length === 0) {
-      setMatchError("No white-collar jobs found.");
-      setChecking(false);
-      return;
-    }
-
-    const recList = [];
-    const improvList = [];
-
-    for (const job of whiteJobs) {
-      const jobSkills = job.required_skills || "";
-      const userSkills = currentProfile.skills || "";
-
-      // Basic skill overlap score
-      const basicScore = computeMatchPercentage(userSkills, jobSkills);
-
-      let aiScore = 0;
-      let reason = "";
-      let missingSkills = [];
-      let courses = [];
-
-      try {
-        const ai = await aiMatchJob(currentProfile, job);
-        aiScore = ai.score || 0;
-        reason = ai.reason || "";
-        missingSkills = ai.missing_skills || [];
-        courses = ai.course_suggestions || [];
-      } catch (err) {
-        console.error("AI matching error:", err);
-        reason = "AI failed to evaluate this job.";
-      }
-
-      const finalScore = basicScore * 0.3 + aiScore * 0.7;
-
-      const record = {
-        jobId: job.id,
-        title: job.title,
-        companyId: job.company_id,
-        job,
-        finalScore,
-        basicScore,
-        aiScore,
-        reason,
-        missingSkills,
-        courses,
-      };
-
-      if (finalScore >= MATCH_THRESHOLD) {
-        recList.push(record);
-      } else {
-        // Only keep "almost" matches if they have some relevance
-        if (finalScore >= 30 || missingSkills.length > 0) {
-          improvList.push(record);
-        }
-      }
-    }
-
-    if (recList.length === 0) {
-      setMatchError("No strong matches found (75%+).");
-    }
-
-    setRecommended(recList);
-    setImprovement(improvList);
-    saveMatchesToCache(currentProfile, recList, improvList);
-    setChecking(false);
-  };
-
-  // ---------------------------------------------------------
-  // MANUAL BUTTON: USE CACHE IF PRESENT (SO SCORE DOESN'T CHANGE)
-  // ---------------------------------------------------------
-  const handleFindJobsClick = async () => {
-    if (!profile) return;
-
-    const cached = loadMatchesFromCache(profile);
-    if (cached) {
-      setRecommended(cached.recommended || []);
-      setImprovement(cached.improvement || []);
-      return;
-    }
-    await refreshMatches(profile);
-  };
-
-  // ---------------------------------------------------------
-  // APPLY TO A JOB (only if score >= threshold)
-  // ---------------------------------------------------------
-  const handleApply = async (jobId) => {
-    if (!profile) return;
-
-    const { data: existing, error: checkError } = await supabase
+    const { data: existing } = await supabase
       .from("applications")
       .select("id")
       .eq("job_id", jobId)
       .eq("user_id", profile.id)
       .maybeSingle();
 
-    if (checkError) {
-      console.error(checkError);
-    }
+    if (existing) return alert("You already applied to this job.");
 
-    if (existing) {
-      alert("You already applied to this job.");
-      return;
-    }
+    const { error } = await supabase
+      .from("applications")
+      .insert({ job_id: jobId, user_id: profile.id });
 
-    const { error } = await supabase.from("applications").insert({
-      job_id: jobId,
-      user_id: profile.id,
-    });
-
-    if (error) {
-      console.error(error);
-      alert("Error applying: " + error.message);
-      return;
-    }
+    if (error) return alert("Error applying: " + error.message);
 
     alert("Application sent! ✅");
   };
 
-  // ---------------------------------------------------------
-  // UI Rendering
-  // ---------------------------------------------------------
-  if (loading || !profile) {
+  // -------------------- FIND MATCHES --------------------
+  const checkMatchingJobs = async () => {
+    setChecking(true);
+    setMatchError("");
+    setMatches([]);
+
+    const { data: jobs, error } = await supabase.from("jobs").select("*");
+    if (error || !jobs) {
+      setMatchError("Failed to load jobs.");
+      setChecking(false);
+      return;
+    }
+
+    const whiteJobs = jobs.filter((j) => j.collar_type === "white");
+
+    const results = [];
+    for (const job of whiteJobs) {
+      const match = await getOrCreateMatch(profile.id, profile, job);
+      if (match.finalScore >= MATCH_THRESHOLD) {
+        results.push({
+          job,
+          finalScore: match.finalScore,
+          reason: match.reason,
+        });
+      }
+    }
+
+    if (!results.length) setMatchError("No strong matches found.");
+
+    results.sort((a, b) => b.finalScore - a.finalScore);
+    setMatches(results);
+    setChecking(false);
+  };
+
+  // -------------------- IMPROVE MATCH --------------------
+  const handleImprove = async (job) => {
+    setShowImproveModal(true);
+    setImproveJob(job);
+    setImproveError("");
+    setImproveLoading(true);
+
+    try {
+      const improvement = await getOrCreateImprovements(
+        profile.id,
+        profile,
+        job
+      );
+      saveSuggestionsToCache(profile.id, job.id, improvement);
+      setImproveData(improvement);
+    } catch {
+      setImproveError("Failed to load improvements.");
+    } finally {
+      setImproveLoading(false);
+    }
+  };
+
+  if (loading || !profile)
     return <p style={{ padding: "2rem" }}>Loading...</p>;
-  }
 
   return (
     <div
@@ -251,47 +149,82 @@ export default function WhiteCollarSummary() {
         padding: "2rem",
         borderRadius: "18px",
         background: "white",
-        boxShadow: "0 8px 30px rgba(0, 0, 0, 0.12)",
+        boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
       }}
     >
-      {/* Top bar with Back */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+      {/* BACK BUTTON */}
+      {cameFromNav && (
         <button
-          onClick={() => navigate("/profile")}
+          onClick={() => navigate(-1)}
           style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "0.3rem",
             padding: "0.4rem 0.8rem",
             borderRadius: "999px",
             border: "1px solid #cbd5e1",
             background: "white",
             cursor: "pointer",
+            marginBottom: "1rem",
             fontSize: "0.85rem",
           }}
         >
-          <FaArrowLeft /> Back
+          ← Back
         </button>
+      )}
 
-        <button
-          onClick={() => navigate("/edit-white-profile")}
-          style={{
-            padding: "0.7rem 1.4rem",
-            borderRadius: "10px",
-            border: "none",
-            background: "#1e3a8a",
-            color: "white",
-            cursor: "pointer",
-            fontWeight: "bold",
-          }}
-        >
-          Edit Profile
-        </button>
-      </div>
+      {/* HEADER WITH PHOTO + CV (FIXED POSITION) */}
+      <div style={{ display: "flex", gap: "1.5rem", alignItems: "center" }}>
+        
+        {/* PROFILE PICTURE + CV button centered */}
+        <div style={{ textAlign: "center", minWidth: "180px" }}>
+          <img
+            src={
+              profile.profile_image ||
+              "https://upload.wikimedia.org/wikipedia/commons/9/99/Sample_User_Icon.png"
+            }
+            alt="Profile"
+            style={{
+              width: "150px",
+              height: "150px",
+              borderRadius: "50%",
+              objectFit: "cover",
+              border: "4px solid #1e3a8a",
+            }}
+          />
 
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
-        <div>
+          <p
+            style={{
+              marginTop: "0.4rem",
+              color: "#475569",
+              fontSize: "0.9rem",
+            }}
+          >
+            Your Profile Picture
+          </p>
+
+          {profile.cv_url && (
+            <a
+              href={profile.cv_url}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                marginTop: "0.7rem",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "0.6rem 1.2rem",
+                background: "#1e3a8a",
+                color: "white",
+                borderRadius: "8px",
+                fontWeight: "bold",
+                textDecoration: "none",
+              }}
+            >
+              <FaFileDownload /> Download CV
+            </a>
+          )}
+        </div>
+
+        {/* TITLE AREA */}
+        <div style={{ flex: 1 }}>
           <h2 style={{ margin: 0, fontSize: "1.8rem", color: "#1e3a8a" }}>
             Your Profile
           </h2>
@@ -307,21 +240,41 @@ export default function WhiteCollarSummary() {
             <FaUserTie style={{ marginRight: 6 }} /> White Collar Professional
           </p>
         </div>
+
+        {/* EDIT BUTTON */}
+        <button
+          onClick={() =>
+            navigate("/edit-white-profile", { state: { fromNav: true } })
+          }
+          style={{
+            padding: "0.7rem 1.4rem",
+            borderRadius: "10px",
+            border: "none",
+            background: "#1e3a8a",
+            color: "white",
+            cursor: "pointer",
+            fontWeight: "bold",
+            height: "45px",
+          }}
+        >
+          Edit Profile
+        </button>
       </div>
 
-      <hr style={{ margin: "1.5rem 0", borderColor: "#e2e8f0" }} />
+      <ProfileSearchBox />
+      <hr style={{ margin: "1.5rem 0", borderColor: "#d0d8e0" }} />
 
-      {/* Personal Info */}
+      {/* PERSONAL INFO */}
       <div style={{ marginBottom: "1rem" }}>
         <h3 style={{ margin: 0, color: "#1e3a8a" }}>
           <FaUserCog style={{ marginRight: "8px" }} /> Personal Information
         </h3>
 
-        <p style={{ margin: "0.5rem 0" }}>
+        <p>
           <strong>Name:</strong> {profile.full_name}
         </p>
 
-        <p style={{ margin: "0.5rem 0" }}>
+        <p>
           <strong>Phone:</strong>{" "}
           <span style={{ display: "inline-flex", alignItems: "center" }}>
             <FaPhone style={{ marginRight: "6px" }} /> {profile.phone}
@@ -329,19 +282,19 @@ export default function WhiteCollarSummary() {
         </p>
       </div>
 
-      {/* Education */}
+      {/* EDUCATION */}
       <div style={{ marginBottom: "1rem" }}>
         <h3 style={{ margin: 0, color: "#1e3a8a" }}>Education</h3>
         <p>{profile.education || "No education added."}</p>
       </div>
 
-      {/* Experience */}
+      {/* EXPERIENCE */}
       <div style={{ marginBottom: "1rem" }}>
         <h3 style={{ margin: 0, color: "#1e3a8a" }}>Experience</h3>
         <p>{profile.experience || "No experience added."}</p>
       </div>
 
-      {/* Skills */}
+      {/* SKILLS */}
       <div style={{ marginBottom: "1rem" }}>
         <h3 style={{ margin: 0, color: "#1e3a8a" }}>
           <FaTools style={{ marginRight: "8px" }} /> Skills
@@ -373,101 +326,111 @@ export default function WhiteCollarSummary() {
             ))}
           </div>
         ) : (
-          <p>No skills yet.</p>
+          <p>No skills added.</p>
         )}
       </div>
 
-      {/* ---------------------------------------------------------------- */}
       {/* MATCHING BUTTON */}
-      {/* ---------------------------------------------------------------- */}
-      <div style={{ marginTop: "1.5rem" }}>
-        <button
-          onClick={handleFindJobsClick}
-          disabled={checking}
-          style={{
-            padding: "0.8rem 1.6rem",
-            background: checking ? "#9ca3af" : "#1e3a8a",
-            color: "white",
-            fontWeight: "bold",
-            borderRadius: "10px",
-            border: "none",
-            cursor: checking ? "default" : "pointer",
-          }}
-        >
-          {checking ? "Finding jobs..." : "🔍 Refresh Matching Jobs"}
-        </button>
+      <button
+        onClick={checkMatchingJobs}
+        disabled={checking}
+        style={{
+          marginTop: "1rem",
+          padding: "0.8rem 1.6rem",
+          background: "#1e3a8a",
+          color: "white",
+          borderRadius: "10px",
+          border: "none",
+          fontWeight: "bold",
+          cursor: "pointer",
+        }}
+      >
+        {checking ? "Finding jobs..." : "🔍 Find Matching Jobs"}
+      </button>
 
-        {matchError && (
-          <p style={{ marginTop: "0.75rem", color: "darkred" }}>{matchError}</p>
-        )}
-      </div>
+      {matchError && (
+        <p style={{ marginTop: "0.75rem", color: "darkred" }}>{matchError}</p>
+      )}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* RECOMMENDED JOBS (CAN APPLY) */}
-      {/* ---------------------------------------------------------------- */}
-      {recommended.length > 0 && (
+      {/* MATCH RESULTS */}
+      {matches.length > 0 && (
         <div style={{ marginTop: "2rem" }}>
-          <h3 style={{ color: "#1e3a8a" }}>🎯 Recommended Jobs (75%+ Match)</h3>
+          <h3 style={{ color: "#1e3a8a" }}>Recommended Jobs</h3>
 
-          {recommended.map((job) => (
+          {matches.map((item) => (
             <div
-              key={job.jobId}
+              key={item.job.id}
               style={{
                 marginTop: "1rem",
                 padding: "1rem",
-                border: "1px solid #e5e7eb",
                 borderRadius: "10px",
-                background: "#f8fafc",
+                border: "1px solid #d1d5db",
+                background: "#f8fbff",
               }}
             >
-              <h4 style={{ margin: 0 }}>{job.title}</h4>
+              <h4 style={{ margin: 0 }}>{item.job.title}</h4>
 
-              <p style={{ margin: "0.3rem 0" }}>
-                <strong>Match:</strong> {job.finalScore.toFixed(1)}%
+              <p>
+                <strong>Match:</strong> {item.finalScore.toFixed(1)}%
               </p>
 
-              {job.reason && (
-                <p style={{ margin: "0.3rem 0" }}>
-                  <strong>Why this matches you:</strong> {job.reason}
+              {item.reason && (
+                <p style={{ color: "#555" }}>
+                  <strong>Reason:</strong> {item.reason}
                 </p>
               )}
 
-              <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
                 <button
                   onClick={() =>
-                    navigate(`/jobs/${job.jobId}`, {
+                    navigate(`/jobs/${item.job.id}`, {
                       state: {
                         fromSummary: true,
+                        fromNav: true,
                         backTo: "/profile/white-summary",
-                        match: job,
-                        collar: "white",
+                        match: {
+                          ...item,
+                          missingSkills: improveData?.missing_skills || [],
+                          courses: improveData?.suggested_courses || [],
+                        },
                       },
                     })
                   }
                   style={{
                     padding: "0.5rem 1rem",
-                    background: "#2563eb",
+                    background: "#1e3a8a",
                     color: "white",
                     border: "none",
                     borderRadius: "8px",
-                    cursor: "pointer",
                   }}
                 >
-                  View Job Details
+                  View Job
                 </button>
 
                 <button
-                  onClick={() => handleApply(job.jobId)}
+                  onClick={() => handleApply(item.job.id, item.finalScore)}
                   style={{
                     padding: "0.5rem 1rem",
                     background: "#16a34a",
                     color: "white",
                     border: "none",
                     borderRadius: "8px",
-                    cursor: "pointer",
                   }}
                 >
                   Apply
+                </button>
+
+                <button
+                  onClick={() => handleImprove(item.job)}
+                  style={{
+                    padding: "0.5rem 1rem",
+                    background: "#f97316",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "8px",
+                  }}
+                >
+                  Improve Match
                 </button>
               </div>
             </div>
@@ -475,96 +438,103 @@ export default function WhiteCollarSummary() {
         </div>
       )}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* "ALMOST" JOBS WITH SUGGESTIONS (NO APPLY) */}
-      {/* ---------------------------------------------------------------- */}
-      {improvement.length > 0 && (
-        <div style={{ marginTop: "2rem" }}>
-          <h3 style={{ color: "#1e3a8a" }}>🚀 Jobs You Could Reach Soon</h3>
-          <p style={{ marginTop: "0.3rem", color: "#475569", fontSize: "0.9rem" }}>
-            These jobs are not an exact match yet, but you can see what skills or
-            courses would help you qualify.
-          </p>
+      {/* IMPROVE MODAL */}
+      {showImproveModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.55)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            zIndex: 50,
+          }}
+          onClick={() => setShowImproveModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "600px",
+              background: "white",
+              borderRadius: "18px",
+              padding: "1.5rem",
+              boxShadow: "0 20px 50px rgba(15,23,42,0.35)",
+            }}
+          >
+            <h3 style={{ margin: 0, color: "#1e3a8a" }}>
+              How to Improve Your Match
+            </h3>
 
-          {improvement.map((job) => (
-            <div
-              key={job.jobId}
-              style={{
-                marginTop: "1rem",
-                padding: "1rem",
-                border: "1px solid #e5e7eb",
-                borderRadius: "10px",
-                background: "#f9fafb",
-              }}
-            >
-              <h4 style={{ margin: 0 }}>{job.title}</h4>
-              <p style={{ margin: "0.2rem 0" }}>
-                <strong>Current match:</strong> {job.finalScore.toFixed(1)}%
+            {improveJob && (
+              <p>
+                Target job: <strong>{improveJob.title}</strong>
               </p>
+            )}
 
+            {improveLoading && <p>Analyzing...</p>}
+
+            {improveError && (
+              <p style={{ color: "darkred" }}>{improveError}</p>
+            )}
+
+            {improveData && (
+              <div>
+                {improveData.missing_skills?.length > 0 && (
+                  <>
+                    <h4>Missing Skills</h4>
+                    <ul>
+                      {improveData.missing_skills.map((s, i) => (
+                        <li key={i}>{s}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                {improveData.missing_experience && (
+                  <>
+                    <h4>Experience Needed</h4>
+                    <p>{improveData.missing_experience}</p>
+                  </>
+                )}
+
+                {improveData.missing_education && (
+                  <>
+                    <h4>Education Needed</h4>
+                    <p>{improveData.missing_education}</p>
+                  </>
+                )}
+
+                {improveData.suggested_courses?.length > 0 && (
+                  <>
+                    <h4>Suggested Courses</h4>
+                    <ul>
+                      {improveData.suggested_courses.map((c, i) => (
+                        <li key={i}>{c}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div style={{ textAlign: "right", marginTop: "1rem" }}>
               <button
-                onClick={() =>
-                  setOpenSuggestionJobId((prev) =>
-                    prev === job.jobId ? null : job.jobId
-                  )
-                }
+                onClick={() => setShowImproveModal(false)}
                 style={{
-                  marginTop: "0.4rem",
-                  padding: "0.4rem 0.8rem",
-                  borderRadius: "8px",
-                  border: "1px solid #cbd5e1",
-                  background: "white",
+                  padding: "0.6rem 1.2rem",
+                  background: "#1e293b",
+                  color: "white",
+                  borderRadius: "10px",
                   cursor: "pointer",
-                  fontSize: "0.85rem",
+                  border: "none",
                 }}
               >
-                {openSuggestionJobId === job.jobId
-                  ? "Hide suggestions"
-                  : "Show how to qualify"}
+                Close
               </button>
-
-              {openSuggestionJobId === job.jobId && (
-                <div style={{ marginTop: "0.6rem", fontSize: "0.9rem" }}>
-                  {job.missingSkills && job.missingSkills.length > 0 && (
-                    <>
-                      <p style={{ margin: 0 }}>
-                        <strong>Missing skills:</strong>
-                      </p>
-                      <ul style={{ marginTop: "0.2rem" }}>
-                        {job.missingSkills.map((s, idx) => (
-                          <li key={idx}>{s}</li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-
-                  {job.courses && job.courses.length > 0 && (
-                    <>
-                      <p style={{ margin: "0.4rem 0 0" }}>
-                        <strong>Suggested courses:</strong>
-                      </p>
-                      <ul style={{ marginTop: "0.2rem" }}>
-                        {job.courses.map((c, idx) => (
-                          <li key={idx}>
-                            <strong>{c.title}</strong>
-                            {c.provider && <> – {c.provider}</>}
-                            {c.focus && <> ({c.focus})</>}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-
-                  {!job.missingSkills?.length && !job.courses?.length && (
-                    <p style={{ marginTop: "0.3rem" }}>
-                      No specific suggestions available. Try improving your skills in
-                      similar areas.
-                    </p>
-                  )}
-                </div>
-              )}
             </div>
-          ))}
+          </div>
         </div>
       )}
     </div>

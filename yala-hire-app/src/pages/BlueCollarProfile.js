@@ -1,7 +1,7 @@
 // src/pages/BlueCollarProfile.jsx
 import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { useNavigate } from "react-router-dom";  // <<< ADDED
+import { useNavigate } from "react-router-dom";
 
 const BLUE_SKILL_OPTIONS = [
   "Electrician",
@@ -44,175 +44,227 @@ const BLUE_SKILL_OPTIONS = [
 ];
 
 export default function BlueCollarProfile() {
-  const navigate = useNavigate(); // <<< ADDED
+  const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  const [userId, setUserId] = useState(null);
+
+  // Form fields
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [experience, setExperience] = useState("");
   const [education, setEducation] = useState("");
+
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [otherSkill, setOtherSkill] = useState("");
+  const isOtherSelected = selectedSkills.includes("Other");
 
-  const [collar, setCollar] = useState("blue");
-  const [userId, setUserId] = useState(null);
+  // Files
+  const [profileImage, setProfileImage] = useState(null);
+  const [cvUrl, setCvUrl] = useState(null);
 
   // -------------------------------------------------------
   // LOAD PROFILE
   // -------------------------------------------------------
   useEffect(() => {
-    const loadProfile = async () => {
-      try {
-        setLoading(true);
+    const load = async () => {
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData?.user;
+      if (!user) return navigate("/login");
 
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+      setUserId(user.id);
 
-        if (!user) {
-          setError("You must be logged in.");
-          return;
-        }
+      let { data: seeker } = await supabase
+        .from("job_seekers")
+        .select("*")
+        .eq("id", user.id)
+        .maybeSingle();
 
-        setUserId(user.id);
-
-        const meta = user.user_metadata || {};
-        const userCollar = meta.collar || "blue";
-        setCollar(userCollar);
-
-        let { data: seeker, error: fetchError } = await supabase
+      if (!seeker) {
+        const { data: created } = await supabase
           .from("job_seekers")
-          .select("*")
-          .eq("id", user.id)
-          .maybeSingle();
-
-        if (fetchError) throw fetchError;
-
-        if (!seeker) {
-          const payload = {
+          .insert({
             id: user.id,
-            full_name: meta.full_name || "",
-            phone: meta.phone || "",
-            collar: userCollar,
+            full_name: "",
+            phone: "",
+            collar: "blue",
             experience: "",
-            skills: "",
             education: "",
-          };
+            skills: "",
+          })
+          .select()
+          .single();
 
-          const { data: inserted, error: insertError } = await supabase
-            .from("job_seekers")
-            .insert(payload)
-            .select()
-            .single();
-
-          if (insertError) throw insertError;
-          seeker = inserted;
-        }
-
-        setFullName(seeker.full_name);
-        setPhone(seeker.phone);
-        setExperience(seeker.experience || "");
-        setEducation(seeker.education || "");
-
-        // Skills → array
-        const raw = (seeker.skills || "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-
-        const knownOptions = new Set(BLUE_SKILL_OPTIONS);
-        const known = [];
-        const other = [];
-
-        raw.forEach((s) => {
-          if (knownOptions.has(s) && s !== "Other") known.push(s);
-          else if (s) other.push(s);
-        });
-
-        if (other.length > 0) {
-          known.push("Other");
-          setOtherSkill(other.join(", "));
-        }
-
-        setSelectedSkills(known);
-      } catch (err) {
-        console.error(err);
-        setError(err.message);
-      } finally {
-        setLoading(false);
+        seeker = created;
       }
+
+      setFullName(seeker.full_name);
+      setPhone(seeker.phone);
+      setExperience(seeker.experience || "");
+      setEducation(seeker.education || "");
+      setProfileImage(seeker.profile_image || null);
+      setCvUrl(seeker.cv_url || null);
+
+      const rawSkills = (seeker.skills || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const knownSkills = [];
+      const otherSkills = [];
+      const all = new Set(BLUE_SKILL_OPTIONS);
+
+      rawSkills.forEach((s) => {
+        if (all.has(s) && s !== "Other") knownSkills.push(s);
+        else otherSkills.push(s);
+      });
+
+      if (otherSkills.length > 0) {
+        knownSkills.push("Other");
+        setOtherSkill(otherSkills.join(", "));
+      }
+
+      setSelectedSkills(knownSkills);
+      setLoading(false);
     };
 
-    loadProfile();
-  }, []);
+    load();
+  }, [navigate]);
 
-  const isOtherSelected = selectedSkills.includes("Other");
+  // -------------------------------------------------------
+  // UPLOAD PROFILE PICTURE
+  // -------------------------------------------------------
+  const handleProfileImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !userId) return;
+
+    const ext = file.name.split(".").pop();
+    const path = `profile_images/${userId}.${ext}`;
+
+    const { error: uploadErr } = await supabase.storage
+      .from("job-files")
+      .upload(path, file, {
+        upsert: true,
+        contentType: file.type,
+      });
+
+    if (uploadErr) {
+      console.error(uploadErr);
+      return alert("Image upload failed");
+    }
+
+    const { data } = supabase.storage.from("job-files").getPublicUrl(path);
+    const publicUrl = data.publicUrl;
+
+    setProfileImage(publicUrl);
+
+    await supabase.from("job_seekers").update({ profile_image: publicUrl }).eq("id", userId);
+  };
+
+  // -------------------------------------------------------
+  // DELETE PROFILE PHOTO
+  // -------------------------------------------------------
+  const handleDeletePhoto = async () => {
+    if (!userId) return;
+
+    const possible = [
+      `profile_images/${userId}.png`,
+      `profile_images/${userId}.jpg`,
+      `profile_images/${userId}.jpeg`,
+    ];
+
+    await supabase.storage.from("job-files").remove(possible);
+
+    await supabase.from("job_seekers").update({ profile_image: null }).eq("id", userId);
+    setProfileImage(null);
+  };
+
+  // -------------------------------------------------------
+  // UPLOAD CV
+  // -------------------------------------------------------
+  const handleCvUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !userId) return;
+
+    const ext = file.name.split(".").pop();
+    const path = `cvs/${userId}.${ext}`;
+
+    const { error: uploadErr } = await supabase.storage
+      .from("job-files")
+      .upload(path, file, {
+        upsert: true,
+        contentType: file.type,
+      });
+
+    if (uploadErr) {
+      console.error(uploadErr);
+      return alert("CV upload failed");
+    }
+
+    const { data } = supabase.storage.from("job-files").getPublicUrl(path);
+    const publicUrl = data.publicUrl;
+
+    setCvUrl(publicUrl);
+
+    await supabase.from("job_seekers").update({ cv_url: publicUrl }).eq("id", userId);
+  };
+
+  // -------------------------------------------------------
+  // DELETE CV
+  // -------------------------------------------------------
+  const handleDeleteCv = async () => {
+    if (!userId) return;
+
+    const possible = [
+      `cvs/${userId}.pdf`,
+      `cvs/${userId}.doc`,
+      `cvs/${userId}.docx`,
+    ];
+
+    await supabase.storage.from("job-files").remove(possible);
+
+    await supabase.from("job_seekers").update({ cv_url: null }).eq("id", userId);
+    setCvUrl(null);
+  };
 
   // -------------------------------------------------------
   // SAVE PROFILE
   // -------------------------------------------------------
   const handleSave = async () => {
-    if (!userId) return;
+    setSaving(true);
 
-    try {
-      setSaving(true);
-      setError("");
-      setSuccess("");
+    let finalSkills = selectedSkills.filter((s) => s !== "Other");
 
-      let skillsToSave = selectedSkills.filter((s) => s !== "Other");
-
-      if (isOtherSelected && otherSkill.trim()) {
-        const extra = otherSkill
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-
-        skillsToSave = [...skillsToSave, ...extra];
-      }
-
-      const { error: updateError } = await supabase
-        .from("job_seekers")
-        .update({
-          full_name: fullName,
-          phone,
-          experience,
-          education,
-          skills: skillsToSave.join(", "),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", userId);
-
-      if (updateError) throw updateError;
-
-      setSuccess("Profile saved successfully ✔");
-
-      // -------------------------------------------------------
-      // ⭐ REDIRECT TO SUMMARY PAGE ⭐
-      // -------------------------------------------------------
-      setTimeout(() => {
-        navigate("/profile/blue-summary");
-      }, 700);
-    } catch (err) {
-      console.error(err);
-      setError(err.message);
-    } finally {
-      setSaving(false);
+    if (isOtherSelected && otherSkill.trim()) {
+      finalSkills = [...finalSkills, ...otherSkill.split(",").map((s) => s.trim())];
     }
+
+    await supabase
+      .from("job_seekers")
+      .update({
+        full_name: fullName,
+        phone,
+        experience,
+        education,
+        skills: finalSkills.join(", "),
+        updated_at: new Date(),
+      })
+      .eq("id", userId);
+
+    setSuccess("Profile saved ✔");
+
+    setTimeout(() => navigate("/profile/blue-summary"), 600);
+    setSaving(false);
   };
 
   // -------------------------------------------------------
-  // UI SECTION
+  // UI
   // -------------------------------------------------------
-  if (loading)
-    return (
-      <div style={{ padding: "2rem", textAlign: "center" }}>
-        <p>Loading your blue collar profile...</p>
-      </div>
-    );
+  if (loading) return <p style={{ padding: "2rem" }}>Loading...</p>;
 
   return (
     <div
@@ -221,39 +273,59 @@ export default function BlueCollarProfile() {
         margin: "2.5rem auto",
         padding: "2rem",
         borderRadius: "20px",
-        background:
-          "linear-gradient(135deg, rgba(219,234,254,0.95), rgba(239,246,255,0.98))",
-        boxShadow: "0 18px 45px rgba(15,23,42,0.18)",
+        background: "white",
+        boxShadow: "0 15px 40px rgba(0,0,0,0.15)",
       }}
     >
-      {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          marginBottom: "1.5rem",
-        }}
-      >
+      {/* ---------------- PROFILE PHOTO LEFT ---------------- */}
+      <div style={{ display: "flex", gap: "2rem", marginBottom: "2rem" }}>
+        {/* PHOTO */}
         <div>
-          <h2 style={{ margin: 0, color: "#0b3b75" }}>Blue Collar Profile</h2>
-          <p style={{ margin: "0.3rem 0", color: "#4b5563" }}>
-            Fill your information so we can match you with jobs.
-          </p>
+          <h3 style={sectionTitle}>Upload Profile Picture</h3>
+
+          <img
+            src={
+              profileImage ||
+              "https://upload.wikimedia.org/wikipedia/commons/9/99/Sample_User_Icon.png"
+            }
+            alt="Profile"
+            style={{
+              width: "150px",
+              height: "150px",
+              borderRadius: "50%",
+              objectFit: "cover",
+              border: "4px solid #0b7ad1",
+              marginBottom: "0.5rem",
+            }}
+          />
+
+          <input type="file" accept="image/*" onChange={handleProfileImageUpload} />
+
+          {profileImage && (
+            <button
+              onClick={handleDeletePhoto}
+              style={{
+                marginTop: "0.6rem",
+                background: "red",
+                color: "white",
+                border: "none",
+                padding: "0.35rem 1rem",
+                borderRadius: "6px",
+                cursor: "pointer",
+              }}
+            >
+              Delete Photo
+            </button>
+          )}
         </div>
 
-        <div
-          style={{
-            background: "#0b7ad1",
-            padding: "0.4rem 0.8rem",
-            color: "white",
-            borderRadius: "999px",
-          }}
-        >
-          Collar type: {collar}
+        {/* TITLE */}
+        <div style={{ display: "flex", alignItems: "center" }}>
+          <h2 style={{ color: "#0b3b75", margin: 0 }}>Blue Collar Profile</h2>
         </div>
       </div>
 
-      {/* LEFT + RIGHT COLUMNS */}
+      {/* ---------------- BASIC INFO + SKILLS ---------------- */}
       <div
         style={{
           display: "grid",
@@ -261,26 +333,18 @@ export default function BlueCollarProfile() {
           gap: "1.5rem",
         }}
       >
-        {/* LEFT PANEL */}
+        {/* LEFT */}
         <div style={panel}>
           <h3 style={sectionTitle}>Basic Information</h3>
 
           <label style={label}>
             Full Name
-            <input
-              style={input}
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-            />
+            <input style={input} value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </label>
 
           <label style={label}>
             Phone
-            <input
-              style={input}
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
+            <input style={input} value={phone} onChange={(e) => setPhone(e.target.value)} />
           </label>
 
           <label style={label}>
@@ -289,23 +353,18 @@ export default function BlueCollarProfile() {
               style={textarea}
               value={experience}
               onChange={(e) => setExperience(e.target.value)}
-              placeholder="Describe your experience..."
             />
           </label>
 
           <label style={label}>
-            Education (optional)
-            <input
-              style={input}
-              value={education}
-              onChange={(e) => setEducation(e.target.value)}
-            />
+            Education
+            <input style={input} value={education} onChange={(e) => setEducation(e.target.value)} />
           </label>
         </div>
 
-        {/* RIGHT PANEL */}
+        {/* RIGHT */}
         <div style={panel}>
-          <h3 style={sectionTitle}>Skills (you can choose many)</h3>
+          <h3 style={sectionTitle}>Skills</h3>
 
           <div style={skillsGrid}>
             {BLUE_SKILL_OPTIONS.map((skill) => (
@@ -313,13 +372,13 @@ export default function BlueCollarProfile() {
                 <input
                   type="checkbox"
                   checked={selectedSkills.includes(skill)}
-                  onChange={() => {
+                  onChange={() =>
                     setSelectedSkills((prev) =>
                       prev.includes(skill)
                         ? prev.filter((s) => s !== skill)
                         : [...prev, skill]
-                    );
-                  }}
+                    )
+                  }
                 />
                 {skill}
               </label>
@@ -328,10 +387,10 @@ export default function BlueCollarProfile() {
 
           {isOtherSelected && (
             <label style={{ ...label, marginTop: "1rem" }}>
-              Other skills
+              Other Skills
               <input
                 style={input}
-                placeholder="Write your skills, separated by commas"
+                placeholder="Separated by commas"
                 value={otherSkill}
                 onChange={(e) => setOtherSkill(e.target.value)}
               />
@@ -340,18 +399,47 @@ export default function BlueCollarProfile() {
         </div>
       </div>
 
-      {/* Save */}
-      <div
-        style={{
-          marginTop: "2rem",
-          display: "flex",
-          justifyContent: "space-between",
-        }}
-      >
-        <div>
-          {error && <p style={{ color: "red" }}>{error}</p>}
-          {success && <p style={{ color: "green" }}>{success}</p>}
-        </div>
+      {/* ---------------- CV UPLOAD BOTTOM ---------------- */}
+      <div style={{ marginTop: "2.5rem" }}>
+        <h3 style={sectionTitle}>Upload CV</h3>
+
+        <input type="file" accept=".pdf,.doc,.docx" onChange={handleCvUpload} />
+
+        {cvUrl && (
+          <>
+            <p style={{ marginTop: "0.4rem" }}>
+              <a
+                href={cvUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "#0b7ad1", textDecoration: "underline", fontWeight: "bold" }}
+              >
+                View Uploaded CV
+              </a>
+            </p>
+
+            <button
+              onClick={handleDeleteCv}
+              style={{
+                background: "red",
+                color: "white",
+                border: "none",
+                padding: "0.3rem 0.8rem",
+                borderRadius: "6px",
+                cursor: "pointer",
+                marginTop: "0.4rem",
+              }}
+            >
+              Delete CV
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* ---------------- SAVE BUTTON ---------------- */}
+      <div style={{ marginTop: "2rem", textAlign: "right" }}>
+        {error && <p style={{ color: "red" }}>{error}</p>}
+        {success && <p style={{ color: "green" }}>{success}</p>}
 
         <button
           onClick={handleSave}
@@ -359,21 +447,22 @@ export default function BlueCollarProfile() {
           style={{
             padding: "0.9rem 1.8rem",
             borderRadius: "999px",
-            background: saving ? "#9ca3af" : "#0b7ad1",
+            background: "#0b7ad1",
             color: "white",
             border: "none",
-            cursor: saving ? "default" : "pointer",
+            cursor: "pointer",
             fontWeight: "bold",
           }}
         >
-          {saving ? "Saving..." : "Save Profile"}
+          {saving ? "Saving…" : "Save Profile"}
         </button>
       </div>
     </div>
   );
 }
 
-// -------------------- STYLES --------------------
+/* ------------- STYLES ------------- */
+
 const panel = {
   background: "white",
   padding: "1.4rem",
@@ -384,7 +473,6 @@ const panel = {
 const label = {
   display: "flex",
   flexDirection: "column",
-  gap: "0.3rem",
   marginBottom: "1rem",
   fontSize: "0.9rem",
   color: "#374151",
@@ -404,18 +492,17 @@ const textarea = {
 };
 
 const sectionTitle = {
-  marginTop: 0,
   marginBottom: "1rem",
   fontSize: "1.1rem",
-  color: "#0b3b75",
   fontWeight: "bold",
+  color: "#0b3b75",
 };
 
 const skillsGrid = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-  gap: "0.8rem",
-  maxHeight: "280px",
+  gap: "0.7rem",
+  maxHeight: "260px",
   overflowY: "auto",
 };
 
@@ -423,7 +510,7 @@ const skillChip = (selected) => ({
   padding: "0.4rem 0.6rem",
   borderRadius: "999px",
   border: selected ? "1px solid #0b7ad1" : "1px solid #ddd",
-  background: selected ? "rgba(11,122,209,0.08)" : "white",
+  background: selected ? "rgba(11,122,209,0.1)" : "white",
   cursor: "pointer",
   display: "flex",
   gap: "0.4rem",

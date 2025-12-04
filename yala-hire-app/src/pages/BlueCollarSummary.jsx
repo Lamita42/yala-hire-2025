@@ -1,57 +1,44 @@
 // src/pages/BlueCollarSummary.jsx
 import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
-import { useNavigate } from "react-router-dom";
-import { FaPhone, FaUserCog, FaTools, FaHardHat, FaArrowLeft } from "react-icons/fa";
-
-import { computeMatchPercentage } from "../utils/matching";
-import { aiMatchJob } from "../utils/aiMatching";
+import { useNavigate, useLocation } from "react-router-dom";
+import {
+  FaPhone,
+  FaUserCog,
+  FaTools,
+  FaHardHat,
+  FaFileDownload,
+  FaChevronLeft,
+} from "react-icons/fa";
+import { saveSuggestionsToCache } from "../utils/aiMatching";
+import ProfileSearchBox from "../components/ProfileSearchBox";
+import {
+  getOrCreateMatch,
+  getOrCreateImprovements,
+} from "../utils/aiMatching";
 
 const MATCH_THRESHOLD = 75;
-
-// ---------- Local cache helpers ----------
-function getCacheKey(profile) {
-  return `matches_blue_${profile.id}`;
-}
-
-function loadMatchesFromCache(profile) {
-  try {
-    const raw = localStorage.getItem(getCacheKey(profile));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed.profileVersion !== profile.updated_at) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function saveMatchesToCache(profile, recommended, improvement) {
-  try {
-    localStorage.setItem(
-      getCacheKey(profile),
-      JSON.stringify({
-        profileVersion: profile.updated_at || null,
-        recommended,
-        improvement,
-      })
-    );
-  } catch (err) {
-    console.warn("Could not save matches cache:", err);
-  }
-}
 
 export default function BlueCollarSummary() {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const cameFromNav = location.state?.fromNav === true;
 
   const [recommended, setRecommended] = useState([]);
-  const [improvement, setImprovement] = useState([]);
   const [checking, setChecking] = useState(false);
   const [matchError, setMatchError] = useState("");
-  const [openSuggestionJobId, setOpenSuggestionJobId] = useState(null);
 
+  // Improve modal
+  const [showImproveModal, setShowImproveModal] = useState(false);
+  const [improveJob, setImproveJob] = useState(null);
+  const [improveData, setImproveData] = useState(null);
+  const [improveLoading, setImproveLoading] = useState(false);
+  const [improveError, setImproveError] = useState("");
+
+  // ------------------------ LOAD PROFILE ------------------------
   useEffect(() => {
     const load = async () => {
       const { data: userData } = await supabase.auth.getUser();
@@ -70,222 +57,240 @@ export default function BlueCollarSummary() {
 
       if (error) {
         console.error(error);
-        setLoading(false);
         return;
       }
 
       setProfile(data);
       setLoading(false);
-
-      const cached = loadMatchesFromCache(data);
-      if (cached) {
-        setRecommended(cached.recommended || []);
-        setImprovement(cached.improvement || []);
-      } else {
-        refreshMatches(data);
-      }
     };
 
     load();
   }, [navigate]);
 
-  const refreshMatches = async (currentProfile) => {
-    if (!currentProfile) return;
+  // ------------------------ APPLY TO JOB ------------------------
+  const handleApply = async (jobId, finalScore) => {
+    if (!profile) return;
+
+    if (finalScore < MATCH_THRESHOLD) {
+      alert("This job is not a strong match yet. Try 'Improve your match'.");
+      return;
+    }
+
+    const { data: existing } = await supabase
+      .from("applications")
+      .select("id")
+      .eq("job_id", jobId)
+      .eq("user_id", profile.id)
+      .maybeSingle();
+
+    if (existing) {
+      alert("You already applied to this job.");
+      return;
+    }
+
+    const { error } = await supabase.from("applications").insert({
+      job_id: jobId,
+      user_id: profile.id,
+    });
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    alert("Application sent! ✅");
+  };
+
+  // ------------------------ FIND JOBS ------------------------
+  const findJobs = async () => {
+    if (!profile) return;
 
     setChecking(true);
-    setRecommended([]);
-    setImprovement([]);
     setMatchError("");
+    setRecommended([]);
 
-    const { data: jobs, error } = await supabase.from("jobs").select("*");
+    const { data: jobs } = await supabase.from("jobs").select("*");
+    const blueJobs = jobs?.filter((j) => j.collar_type === "blue") || [];
 
-    if (error || !jobs) {
-      console.error("Failed to load jobs:", error);
-      setMatchError("Failed to load jobs.");
-      setChecking(false);
-      return;
-    }
-
-    const blueJobs = jobs.filter((job) => job.collar_type === "blue");
-
-    if (blueJobs.length === 0) {
-      setMatchError("No blue-collar jobs found.");
-      setChecking(false);
-      return;
-    }
-
-    const recList = [];
-    const improvList = [];
+    const results = [];
 
     for (const job of blueJobs) {
-      const jobSkills = job.required_skills || "";
-      const userSkills = currentProfile.skills || "";
+      const match = await getOrCreateMatch(profile.id, profile, job);
 
-      const basicScore = computeMatchPercentage(userSkills, jobSkills);
-
-      let aiScore = 0;
-      let reason = "";
-      let missingSkills = [];
-      let courses = [];
-
-      try {
-        const ai = await aiMatchJob(currentProfile, job);
-        aiScore = ai.score || 0;
-        reason = ai.reason || "";
-        missingSkills = ai.missing_skills || [];
-        courses = ai.course_suggestions || [];
-      } catch (err) {
-        console.error("AI matching error:", err);
-        reason = "AI failed to evaluate this job.";
-      }
-
-      const finalScore = basicScore * 0.3 + aiScore * 0.7;
-
-      const record = {
-        jobId: job.id,
-        title: job.title,
-        companyId: job.company_id,
-        job,
-        finalScore,
-        basicScore,
-        aiScore,
-        reason,
-        missingSkills,
-        courses,
-      };
-
-      if (finalScore >= MATCH_THRESHOLD) {
-        recList.push(record);
-      } else if (finalScore >= 25 || missingSkills.length > 0) {
-        improvList.push(record);
+      if (match.finalScore >= MATCH_THRESHOLD) {
+        results.push({
+          job,
+          finalScore: match.finalScore,
+          reason: match.reason,
+        });
       }
     }
 
-    if (recList.length === 0) {
-      setMatchError("No strong matches found (75%+).");
-    }
+    results.sort((a, b) => b.finalScore - a.finalScore);
+    setRecommended(results);
+    if (results.length === 0) setMatchError("No strong matches found (75%+).");
 
-    setRecommended(recList);
-    setImprovement(improvList);
-    saveMatchesToCache(currentProfile, recList, improvList);
     setChecking(false);
   };
 
-  const handleFindJobsClick = async () => {
-    if (!profile) return;
+  // ------------------------ IMPROVE MATCH ------------------------
+  const handleImprove = async (job) => {
+    setShowImproveModal(true);
+    setImproveJob(job);
+    setImproveData(null);
+    setImproveError("");
+    setImproveLoading(true);
 
-    const cached = loadMatchesFromCache(profile);
-    if (cached) {
-      setRecommended(cached.recommended || []);
-      setImprovement(cached.improvement || []);
-      return;
+    try {
+      const imp = await getOrCreateImprovements(profile.id, profile, job);
+      saveSuggestionsToCache(profile.id, job.id, imp);
+      setImproveData(imp);
+    } catch (err) {
+      setImproveError("Failed to load improvements.");
+    } finally {
+      setImproveLoading(false);
     }
-    await refreshMatches(profile);
   };
 
   if (loading || !profile)
     return <p style={{ padding: "2rem" }}>Loading profile...</p>;
 
+  // =================================================================
+  // =======================     UI START     =========================
+  // =================================================================
+
   return (
     <div
       style={{
-        maxWidth: "850px",
+        maxWidth: "860px",
         margin: "3rem auto",
         padding: "2rem",
-        borderRadius: "18px",
+        borderRadius: "22px",
         background: "white",
-        boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
+        boxShadow: "0 12px 35px rgba(0,0,0,0.12)",
+        transition: "0.3s ease",
       }}
     >
-      {/* Top bar with Back */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.5rem" }}>
+      {/* BACK BUTTON (only when coming from routes inside the app) */}
+      {cameFromNav && (
         <button
-          onClick={() => navigate("/profile")}
+          onClick={() => navigate(-1)}
           style={{
-            display: "inline-flex",
+            display: "flex",
             alignItems: "center",
-            gap: "0.3rem",
-            padding: "0.4rem 0.8rem",
+            gap: "0.5rem",
+            padding: "0.5rem 1rem",
             borderRadius: "999px",
-            border: "1px solid #cbd5e1",
+            border: "1px solid #d0d7e2",
             background: "white",
             cursor: "pointer",
-            fontSize: "0.85rem",
+            marginBottom: "1.5rem",
+            fontSize: "0.9rem",
           }}
         >
-          <FaArrowLeft /> Back
+          <FaChevronLeft /> Back
         </button>
+      )}
 
-        <button
-          onClick={() => navigate("/edit-blue-profile")}
+      {/* ========================================================== */}
+      {/* =============== HEADER PROFILE CARD ======================= */}
+      {/* ========================================================== */}
+
+      <div
+        style={{
+          display: "flex",
+          gap: "1.5rem",
+          padding: "1.5rem",
+          borderRadius: "18px",
+          background: "#f0f6ff",
+          boxShadow: "inset 0 0 10px rgba(0,0,0,0.05)",
+        }}
+      >
+        <img
+          src={
+            profile.profile_image ||
+            "https://upload.wikimedia.org/wikipedia/commons/9/99/Sample_User_Icon.png"
+          }
+          alt="Profile"
           style={{
-            padding: "0.7rem 1.4rem",
-            borderRadius: "10px",
-            border: "none",
-            background: "#0b7ad1",
-            color: "white",
-            cursor: "pointer",
-            fontWeight: "bold",
+            width: "130px",
+            height: "130px",
+            borderRadius: "50%",
+            objectFit: "cover",
+            border: "4px solid #0b7ad1",
           }}
-        >
-          Edit Profile
-        </button>
-      </div>
+        />
 
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between" }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: "1.8rem", color: "#0b3b75" }}>
-            Your Profile
+        <div style={{ flex: 1 }}>
+          <h2 style={{ margin: "0", fontSize: "1.8rem", color: "#0b3b75" }}>
+            {profile.full_name}
           </h2>
+
           <p
             style={{
-              margin: 0,
+              marginTop: "0.3rem",
+              color: "#0b7ad1",
+              fontWeight: "bold",
               display: "flex",
               alignItems: "center",
-              color: "#0b7ad1",
+            }}
+          >
+            <FaHardHat style={{ marginRight: "6px" }} /> Blue Collar Worker
+          </p>
+
+          <p
+            style={{
+              margin: "0.4rem 0",
+              color: "#475569",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            <FaPhone style={{ marginRight: "8px" }} />
+            {profile.phone}
+          </p>
+
+          <button
+            onClick={() =>
+              navigate("/edit-blue-profile", { state: { fromNav: true } })
+            }
+            style={{
+              marginTop: "0.5rem",
+              padding: "0.6rem 1.4rem",
+              borderRadius: "10px",
+              border: "none",
+              background: "#0b7ad1",
+              color: "white",
+              cursor: "pointer",
               fontWeight: "bold",
             }}
           >
-            <FaHardHat style={{ marginRight: 6 }} /> Blue Collar Worker
-          </p>
+            Edit Profile
+          </button>
         </div>
       </div>
 
-      <hr style={{ margin: "1.5rem 0", borderColor: "#d0d8e0" }} />
-
-      {/* PERSONAL INFO */}
-      <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>
-          <FaUserCog style={{ marginRight: "8px" }} /> Personal Information
-        </h3>
-        <p>
-          <strong>Name:</strong> {profile.full_name}
-        </p>
-        <p>
-          <strong>Phone:</strong>{" "}
-          <span style={{ display: "inline-flex", alignItems: "center" }}>
-            <FaPhone style={{ marginRight: "6px" }} /> {profile.phone}
-          </span>
-        </p>
+      {/* SEARCH BOX */}
+      <div style={{ marginTop: "1.5rem" }}>
+        <ProfileSearchBox />
       </div>
+
+      <hr style={{ margin: "1.8rem 0", borderColor: "#dce3ec" }} />
+
+      {/* ========================================================== */}
+      {/* =================== PROFILE SECTIONS ====================== */}
+      {/* ========================================================== */}
 
       {/* EXPERIENCE */}
-      <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>Experience</h3>
-        <p>{profile.experience || "No experience added."}</p>
-      </div>
+      <Section title="Experience" value={profile.experience || "No experience added."} />
 
       {/* EDUCATION */}
-      <div style={{ marginBottom: "1rem" }}>
-        <h3 style={{ margin: 0, color: "#004080" }}>Education</h3>
-        <p>{profile.education || "No education added."}</p>
-      </div>
+      <Section title="Education" value={profile.education || "No education added."} />
 
       {/* SKILLS */}
-      <div style={{ marginBottom: "1rem" }}>
+      <div style={{ marginBottom: "1.4rem" }}>
         <h3 style={{ margin: 0, color: "#004080" }}>
-          <FaTools style={{ marginRight: "8px" }} /> Skills
+          <FaTools style={{ marginRight: "6px" }} /> Skills
         </h3>
 
         {profile.skills ? (
@@ -301,12 +306,12 @@ export default function BlueCollarSummary() {
               <span
                 key={idx}
                 style={{
-                  background: "#e9f3ff",
-                  color: "#004080",
-                  padding: "0.35rem 0.7rem",
+                  background: "#e3f2ff",
+                  color: "#0b3b75",
+                  padding: "0.35rem 0.75rem",
                   borderRadius: "999px",
+                  fontWeight: "bold",
                   fontSize: "0.85rem",
-                  fontWeight: 600,
                 }}
               >
                 {skill.trim()}
@@ -318,47 +323,83 @@ export default function BlueCollarSummary() {
         )}
       </div>
 
-      {/* ----------------------------------------------------
-          🔍 FIND AI MATCHING JOBS
-      ------------------------------------------------------ */}
+      {/* ========================================================== */}
+      {/* ==================== CV DOWNLOAD ========================== */}
+      {/* ========================================================== */}
+
+      {profile.cv_url && (
+        <div style={{ marginTop: "1.5rem", textAlign: "center" }}>
+          <a
+            href={profile.cv_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.6rem",
+              padding: "0.8rem 1.6rem",
+              background: "#0b7ad1",
+              color: "white",
+              borderRadius: "12px",
+              textDecoration: "none",
+              fontWeight: "bold",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            }}
+          >
+            <FaFileDownload /> Download CV
+          </a>
+        </div>
+      )}
+
+      <hr style={{ margin: "2rem 0" }} />
+
+      {/* ========================================================== */}
+      {/* ================= MATCHING JOBS SECTION ================== */}
+      {/* ========================================================== */}
+
       <button
-        onClick={handleFindJobsClick}
+        onClick={findJobs}
         disabled={checking}
         style={{
-          marginTop: "1.5rem",
-          padding: "0.8rem 1.6rem",
-          borderRadius: "10px",
-          background: checking ? "#9ca3af" : "#0b7ad1",
+          padding: "0.9rem 1.6rem",
+          width: "100%",
+          borderRadius: "12px",
+          background: "#0b7ad1",
           color: "white",
           border: "none",
-          cursor: checking ? "default" : "pointer",
+          cursor: "pointer",
           fontWeight: "bold",
         }}
       >
-        {checking ? "Analyzing jobs..." : "🔍 Refresh Matching Jobs"}
+        {checking ? "Analyzing jobs..." : "🔍 Find Matching Jobs"}
       </button>
 
       {matchError && (
-        <p style={{ marginTop: "0.75rem", color: "darkred" }}>{matchError}</p>
+        <p style={{ marginTop: "0.8rem", color: "darkred", textAlign: "center" }}>
+          {matchError}
+        </p>
       )}
 
-      {/* ---------------------- RECOMMENDED ---------------------- */}
+      {/* MATCH RESULTS */}
       {recommended.length > 0 && (
         <div style={{ marginTop: "2rem" }}>
-          <h3 style={{ color: "#0b3b75" }}>Recommended Jobs (75%+ Match)</h3>
+          <h3 style={{ color: "#0b3b75", marginBottom: "1rem" }}>
+            Recommended Jobs (75%+ Match)
+          </h3>
 
           <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             {recommended.map((item) => (
               <div
-                key={item.jobId}
+                key={item.job.id}
                 style={{
-                  border: "1px solid #d1d5db",
+                  border: "1px solid #d7e3f3",
                   padding: "1rem",
-                  borderRadius: "10px",
+                  borderRadius: "12px",
                   background: "#f8fbff",
+                  boxShadow: "0 2px 6px rgba(0,0,0,0.05)",
                 }}
               >
-                <h4 style={{ margin: 0 }}>{item.title}</h4>
+                <h4 style={{ margin: 0 }}>{item.job.title}</h4>
 
                 <p style={{ margin: "0.2rem 0" }}>
                   <strong>Match:</strong> {item.finalScore.toFixed(1)}%
@@ -368,126 +409,178 @@ export default function BlueCollarSummary() {
                   <strong>Why:</strong> {item.reason}
                 </p>
 
-                <button
-                  onClick={() =>
-                    navigate(`/jobs/${item.jobId}`, {
-                      state: {
-                        fromSummary: true,
-                        backTo: "/profile/blue-summary",
-                        match: item,
-                        collar: "blue",
-                      },
-                    })
-                  }
-                  style={{
-                    marginTop: "0.5rem",
-                    padding: "0.5rem 1rem",
-                    background: "#0b7ad1",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    fontWeight: "bold",
-                  }}
-                >
-                  View Job
-                </button>
+                <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+                  <button
+                    onClick={() =>
+                      navigate(`/jobs/${item.job.id}`, {
+                        state: {
+                          fromSummary: true,
+                          fromNav: true,
+                          backTo: "/profile/blue-summary",
+                          match: {
+                            ...item,
+                            missingSkills: improveData?.missing_skills || [],
+                            courses: improveData?.suggested_courses || [],
+                          },
+                        },
+                      })
+                    }
+                    style={{
+                      padding: "0.5rem 1rem",
+                      background: "#0b7ad1",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "8px",
+                      cursor: "pointer",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    View Job
+                  </button>
+
+                  <button
+                    onClick={() => handleApply(item.job.id, item.finalScore)}
+                    style={{
+                      padding: "0.5rem 1rem",
+                      background: "#16a34a",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "8px",
+                      cursor: "pointer",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    Apply
+                  </button>
+
+                  <button
+                    onClick={() => handleImprove(item.job)}
+                    style={{
+                      padding: "0.5rem 1rem",
+                      background: "#f97316",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "8px",
+                      cursor: "pointer",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    Improve your match
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* -------------------- IMPROVEMENT LIST -------------------- */}
-      {improvement.length > 0 && (
-        <div style={{ marginTop: "2rem" }}>
-          <h3 style={{ color: "#0b3b75" }}>Jobs You Can Reach Soon</h3>
-          <p style={{ marginTop: "0.3rem", color: "#475569", fontSize: "0.9rem" }}>
-            These jobs are not yet a strong match, but you can see what to learn
-            to get closer.
-          </p>
-
-          {improvement.map((job) => (
-            <div
-              key={job.jobId}
-              style={{
-                marginTop: "1rem",
-                padding: "1rem",
-                borderRadius: "10px",
-                border: "1px solid #e5e7eb",
-                background: "#f9fafb",
-              }}
-            >
-              <h4 style={{ margin: 0 }}>{job.title}</h4>
-              <p style={{ margin: "0.2rem 0" }}>
-                <strong>Current match:</strong> {job.finalScore.toFixed(1)}%
-              </p>
-
-              <button
-                onClick={() =>
-                  setOpenSuggestionJobId((prev) =>
-                    prev === job.jobId ? null : job.jobId
-                  )
-                }
-                style={{
-                  marginTop: "0.4rem",
-                  padding: "0.4rem 0.8rem",
-                  borderRadius: "8px",
-                  border: "1px solid #cbd5e1",
-                  background: "white",
-                  cursor: "pointer",
-                  fontSize: "0.85rem",
-                }}
-              >
-                {openSuggestionJobId === job.jobId
-                  ? "Hide suggestions"
-                  : "Show how to qualify"}
-              </button>
-
-              {openSuggestionJobId === job.jobId && (
-                <div style={{ marginTop: "0.6rem", fontSize: "0.9rem" }}>
-                  {job.missingSkills && job.missingSkills.length > 0 && (
-                    <>
-                      <p style={{ margin: 0 }}>
-                        <strong>Missing skills:</strong>
-                      </p>
-                      <ul style={{ marginTop: "0.2rem" }}>
-                        {job.missingSkills.map((s, idx) => (
-                          <li key={idx}>{s}</li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-
-                  {job.courses && job.courses.length > 0 && (
-                    <>
-                      <p style={{ margin: "0.4rem 0 0" }}>
-                        <strong>Suggested courses:</strong>
-                      </p>
-                      <ul style={{ marginTop: "0.2rem" }}>
-                        {job.courses.map((c, idx) => (
-                          <li key={idx}>
-                            <strong>{c.title}</strong>
-                            {c.provider && <> – {c.provider}</>}
-                            {c.focus && <> ({c.focus})</>}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-
-                  {!job.missingSkills?.length && !job.courses?.length && (
-                    <p style={{ marginTop: "0.3rem" }}>
-                      No specific suggestions available. Try improving similar
-                      practical skills.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+      {/* IMPROVE MODAL (same behavior) */}
+      {showImproveModal && (
+        <ImproveModal
+          improveJob={improveJob}
+          improveLoading={improveLoading}
+          improveError={improveError}
+          improveData={improveData}
+          onClose={() => setShowImproveModal(false)}
+        />
       )}
+    </div>
+  );
+}
+
+// Small reusable section component
+function Section({ title, value }) {
+  return (
+    <div style={{ marginBottom: "1.4rem" }}>
+      <h3 style={{ margin: 0, color: "#004080" }}>{title}</h3>
+      <p style={{ marginTop: "0.4rem" }}>{value}</p>
+    </div>
+  );
+}
+
+// Improve modal
+function ImproveModal({ improveJob, improveLoading, improveError, improveData, onClose }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.55)",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        zIndex: 50,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "100%",
+          maxWidth: "550px",
+          background: "white",
+          borderRadius: "18px",
+          padding: "1.5rem",
+          boxShadow: "0 20px 50px rgba(0,0,0,0.35)",
+        }}
+      >
+        <h3 style={{ marginTop: 0, color: "#0b3b75" }}>How to improve your match</h3>
+
+        <p style={{ marginTop: 0, color: "#4b5563" }}>
+          Target job: <strong>{improveJob.title}</strong>
+        </p>
+
+        {improveLoading && <p>Loading...</p>}
+        {improveError && <p style={{ color: "red" }}>{improveError}</p>}
+
+        {improveData && (
+          <div style={{ marginTop: "0.5rem" }}>
+            {improveData.missing_skills && improveData.missing_skills.length > 0 && (
+              <>
+                <h4>Missing skills</h4>
+                <ul>{improveData.missing_skills.map((s, i) => <li key={i}>{s}</li>)}</ul>
+              </>
+            )}
+
+            {improveData.missing_experience && (
+              <>
+                <h4>Experience gap</h4>
+                <p>{improveData.missing_experience}</p>
+              </>
+            )}
+
+            {improveData.missing_education && (
+              <>
+                <h4>Education gap</h4>
+                <p>{improveData.missing_education}</p>
+              </>
+            )}
+
+            {improveData.suggested_courses && improveData.suggested_courses.length > 0 && (
+              <>
+                <h4>Suggested courses</h4>
+                <ul>{improveData.suggested_courses.map((c, i) => <li key={i}>{c}</li>)}</ul>
+              </>
+            )}
+          </div>
+        )}
+
+        <div style={{ textAlign: "right", marginTop: "1rem" }}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "0.6rem 1.2rem",
+              borderRadius: "999px",
+              background: "#1e293b",
+              color: "white",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

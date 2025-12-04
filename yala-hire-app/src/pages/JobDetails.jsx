@@ -2,7 +2,14 @@
 import React, { useEffect, useState } from "react";
 import { supabase } from "../supabaseClient";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
-import { FaMapMarkerAlt, FaBriefcase, FaTools, FaExternalLinkAlt, FaArrowLeft } from "react-icons/fa";
+import {
+  FaMapMarkerAlt,
+  FaBriefcase,
+  FaTools,
+  FaExternalLinkAlt,
+  FaArrowLeft,
+  FaBuilding,
+} from "react-icons/fa";
 
 const MATCH_THRESHOLD = 75;
 
@@ -11,24 +18,27 @@ export default function JobDetails() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // if navigated from summary:
   const matchFromSummary = location.state?.match || null;
-  const fromSummary = Boolean(location.state?.fromSummary);
   const backTo = location.state?.backTo || null;
 
   const [job, setJob] = useState(null);
   const [company, setCompany] = useState(null);
   const [isOwner, setIsOwner] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [message, setMessage] = useState("");
+  const [hasApplied, setHasApplied] = useState(false);
+  const [userId, setUserId] = useState(null);
+
   const [error, setError] = useState("");
 
+  // ------------------------- LOAD JOB + COMPANY + APPLICATION STATUS -------------------------
   useEffect(() => {
     const load = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
 
+      if (user) setUserId(user.id);
+
+      // Load job
       const { data: jobData, error: jobError } = await supabase
         .from("jobs")
         .select("*")
@@ -41,6 +51,7 @@ export default function JobDetails() {
       }
       setJob(jobData);
 
+      // Load company
       const { data: companyData } = await supabase
         .from("company_profiles")
         .select("*")
@@ -49,69 +60,83 @@ export default function JobDetails() {
 
       setCompany(companyData || null);
 
+      // Owner check
       if (user && companyData && user.id === companyData.id) {
         setIsOwner(true);
+      }
+
+      // Already applied?
+      if (user) {
+        const { data: existingApp } = await supabase
+          .from("applications")
+          .select("id")
+          .eq("job_id", jobId)
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (existingApp) setHasApplied(true);
       }
     };
 
     load();
   }, [jobId]);
 
+  // ------------------------- HANDLE APPLY -------------------------
   const handleApply = async () => {
-    setMessage("");
-    setError("");
-    setApplying(true);
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
+    if (!userId) {
       navigate("/login");
       return;
     }
 
-    const { data: seeker, error: seekerError } = await supabase
+    // Ensure user is a job seeker
+    const { data: seeker } = await supabase
       .from("job_seekers")
       .select("id")
-      .eq("id", user.id)
+      .eq("id", userId)
       .single();
 
-    if (seekerError || !seeker) {
-      setError("You must have a seeker profile to apply.");
-      setApplying(false);
+    if (!seeker) {
+      alert("Only job seekers can apply.");
       return;
     }
 
-    const { error: appError } = await supabase.from("applications").insert({
-      job_id: job.id,
-      user_id: seeker.id,
+    // Insert application
+    const { error } = await supabase.from("applications").insert({
+      job_id: jobId,
+      user_id: userId,
     });
 
-    if (appError) {
-      setError(appError.message);
-    } else {
-      setMessage("Application sent ✔ Only the company can view your profile.");
+    if (error) {
+      alert("Error applying: " + error.message);
+      return;
     }
 
-    setApplying(false);
+    setHasApplied(true);
+    alert("Application sent! ✅");
   };
 
-  if (error) {
+  // ------------------------- UI -------------------------
+  if (error)
     return <p style={{ padding: "2rem", color: "red" }}>{error}</p>;
-  }
-  if (!job) {
+
+  if (!job)
     return <p style={{ padding: "2rem" }}>Loading job...</p>;
-  }
 
   const skills = (job.required_skills || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // If we came from summary & have a score < threshold → do not show Apply
-  const canApplyBasedOnMatch =
-    !matchFromSummary || (matchFromSummary.finalScore || 0) >= MATCH_THRESHOLD;
+  const matchScore =
+    matchFromSummary?.finalScore != null
+      ? matchFromSummary.finalScore
+      : null;
+
+  const canApply =
+    !isOwner &&
+    !hasApplied &&
+    matchScore !== null &&
+    matchScore >= MATCH_THRESHOLD;
 
   return (
     <div
@@ -125,13 +150,17 @@ export default function JobDetails() {
       }}
     >
       {/* BACK BUTTON */}
-      <div style={{ marginBottom: "0.75rem", display: "flex", justifyContent: "space-between" }}>
+      <div
+        style={{
+          marginBottom: "0.75rem",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
         <button
           type="button"
-          onClick={() => {
-            if (backTo) navigate(backTo);
-            else navigate(-1);
-          }}
+          onClick={() => (backTo ? navigate(backTo) : navigate(-1))}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -147,10 +176,14 @@ export default function JobDetails() {
           <FaArrowLeft /> Back
         </button>
 
-        {company && (
+        {!isOwner && company && (
           <button
             type="button"
-            onClick={() => navigate(`/company-profile/${company.id}`)}
+            onClick={() =>
+              navigate("/profile/company-summary", {
+                state: { companyId: company.id },
+              })
+            }
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -163,15 +196,19 @@ export default function JobDetails() {
               fontSize: "0.85rem",
             }}
           >
-            View company profile <FaExternalLinkAlt size={10} />
+            <FaBuilding />
+            View Company
+            <FaExternalLinkAlt size={10} />
           </button>
         )}
       </div>
 
+      {/* TITLE */}
       <h2 style={{ marginTop: 0, marginBottom: "0.2rem", color: "#0b3b75" }}>
         {job.title}
       </h2>
 
+      {/* COLLAR TYPE */}
       <p
         style={{
           margin: 0,
@@ -186,6 +223,7 @@ export default function JobDetails() {
         {job.collar_type === "blue" ? "Blue Collar" : "White Collar"}
       </p>
 
+      {/* LOCATION */}
       <p
         style={{
           marginTop: "0.3rem",
@@ -204,34 +242,50 @@ export default function JobDetails() {
 
       <hr style={{ margin: "1rem 0", borderColor: "#e5e7eb" }} />
 
-      <h3 style={{ marginBottom: "0.5rem", color: "#0b3b75" }}>Description</h3>
-      <p style={{ whiteSpace: "pre-line", lineHeight: 1.5 }}>{job.description}</p>
+      {/* DESCRIPTION */}
+      <h3 style={{ color: "#0b3b75", marginBottom: "0.5rem" }}>
+        Description
+      </h3>
+      <p style={{ whiteSpace: "pre-line", lineHeight: 1.5 }}>
+        {job.description}
+      </p>
 
-      <h3 style={{ marginTop: "1.5rem", marginBottom: "0.5rem", color: "#0b3b75" }}>
+      {/* REQUIREMENTS */}
+      <h3 style={{ marginTop: "1.5rem", color: "#0b3b75" }}>
         Requirements
       </h3>
-      <ul style={{ marginTop: 0, paddingLeft: "1.2rem", color: "#374151" }}>
+      <ul style={{ paddingLeft: "1.2rem" }}>
         {job.required_experience_years != null && (
           <li>
             Experience: {job.required_experience_years} year
-            {job.required_experience_years > 1 ? "s" : ""} or more
+            {job.required_experience_years > 1 ? "s" : ""}
           </li>
         )}
+
         {job.education_level && job.education_level !== "none" && (
           <li>
             Education:{" "}
-            {job.education_level === "high_school" && "High school / Baccalaureate"}
-            {job.education_level === "technical" && "Technical diploma"}
-            {job.education_level === "university" && "University degree"}
+            {job.education_level === "high_school" &&
+              "High school / Baccalaureate"}
+            {job.education_level === "technical" &&
+              "Technical diploma"}
+            {job.education_level === "university" &&
+              "University degree"}
             {job.education_degree && ` – ${job.education_degree}`}
             {job.education_major && ` in ${job.education_major}`}
           </li>
         )}
       </ul>
 
-      <h3 style={{ marginTop: "1.5rem", marginBottom: "0.5rem", color: "#0b3b75" }}>
-        <FaTools style={{ marginRight: 6 }} />
-        Required Skills
+      {/* SKILLS */}
+      <h3
+        style={{
+          marginTop: "1.5rem",
+          marginBottom: "0.5rem",
+          color: "#0b3b75",
+        }}
+      >
+        <FaTools style={{ marginRight: 6 }} /> Required Skills
       </h3>
 
       {skills.length ? (
@@ -263,8 +317,8 @@ export default function JobDetails() {
         <p>No specific skills listed.</p>
       )}
 
-      {/* EXTRA: show match info if we came from summary */}
-      {matchFromSummary && (
+      {/* MATCH INFO */}
+      {matchScore !== null && (
         <div
           style={{
             marginTop: "1rem",
@@ -276,80 +330,69 @@ export default function JobDetails() {
         >
           <p style={{ margin: 0 }}>
             <strong>Your match score:</strong>{" "}
-            {matchFromSummary.finalScore.toFixed(1)}%
+            {matchScore.toFixed(1)}%
           </p>
-          {matchFromSummary.reason && (
-            <p style={{ margin: "0.3rem 0 0" }}>
+
+          {matchFromSummary?.reason && (
+            <p style={{ marginTop: "0.3rem" }}>
               <strong>Why:</strong> {matchFromSummary.reason}
             </p>
           )}
-
-          {!canApplyBasedOnMatch && (
-            <>
-              <p style={{ margin: "0.6rem 0 0", color: "#b91c1c" }}>
-                You currently don't meet the requirements to apply for this job.
-              </p>
-
-              {matchFromSummary.missingSkills &&
-                matchFromSummary.missingSkills.length > 0 && (
-                  <>
-                    <p style={{ margin: "0.4rem 0 0" }}>
-                      <strong>Missing skills:</strong>
-                    </p>
-                    <ul style={{ marginTop: "0.2rem" }}>
-                      {matchFromSummary.missingSkills.map((s, idx) => (
-                        <li key={idx}>{s}</li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-
-              {matchFromSummary.courses &&
-                matchFromSummary.courses.length > 0 && (
-                  <>
-                    <p style={{ margin: "0.4rem 0 0" }}>
-                      <strong>Suggested courses:</strong>
-                    </p>
-                    <ul style={{ marginTop: "0.2rem" }}>
-                      {matchFromSummary.courses.map((c, idx) => (
-                        <li key={idx}>
-                          <strong>{c.title}</strong>
-                          {c.provider && <> – {c.provider}</>}
-                          {c.focus && <> ({c.focus})</>}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-            </>
-          )}
         </div>
       )}
 
-      {/* APPLY BUTTON (hidden for owner or if score too low) */}
-      {!isOwner && canApplyBasedOnMatch && (
-        <div style={{ marginTop: "1rem" }}>
-          {message && <p style={{ color: "#15803d" }}>{message}</p>}
-          {error && <p style={{ color: "darkred" }}>{error}</p>}
-
-          <button
-            type="button"
-            onClick={handleApply}
-            disabled={applying}
+      {/* APPLY BUTTON CONDITIONS */}
+      <div style={{ marginTop: "1.5rem" }}>
+        {hasApplied ? (
+          <div
             style={{
-              padding: "0.9rem 2rem",
-              borderRadius: "999px",
-              border: "none",
-              background: "#0b7ad1",
-              color: "white",
+              width: "100%",
+              padding: "0.9rem",
+              background: "#d1fae5",
+              color: "#065f46",
+              textAlign: "center",
+              borderRadius: "10px",
               fontWeight: "bold",
-              cursor: applying ? "default" : "pointer",
             }}
           >
-            {applying ? "Sending..." : "Apply"}
+            ✔ You already applied
+          </div>
+        ) : canApply ? (
+          <button
+            onClick={handleApply}
+            style={{
+              width: "100%",
+              padding: "0.9rem 1.4rem",
+              background: "#16a34a",
+              color: "white",
+              borderRadius: "10px",
+              fontWeight: "bold",
+              border: "none",
+              cursor: "pointer",
+              fontSize: "1rem",
+            }}
+          >
+            Apply Now
           </button>
-        </div>
-      )}
+        ) : (
+          matchScore !== null &&
+          matchScore < MATCH_THRESHOLD && (
+            <div
+              style={{
+                width: "100%",
+                padding: "0.9rem",
+                background: "#fee2e2",
+                color: "#991b1b",
+                textAlign: "center",
+                borderRadius: "10px",
+                fontWeight: "bold",
+              }}
+            >
+              ❌ Match below 75% — Improve your skills before applying
+            </div>
+          )
+        )}
+      </div>
     </div>
   );
 }
